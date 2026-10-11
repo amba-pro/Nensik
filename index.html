@@ -27,6 +27,7 @@
     max-height: 100vh;
   }
   canvas {
+    touch-action: none;
     width: 100%;
     height: 100%;
     display: block;
@@ -97,7 +98,7 @@
       <div class="card">
         <h1>Кошка бежит</h1>
         <p>Паркет уходит назад, коробки и цветы лезут под лапы.</p>
-        <div class="hint"><kbd>Пробел</kbd> — прыжок</div>
+        <div class="hint"><kbd>Пробел</kbd> или касание — прыжок</div>
       </div>
     </div>
     <div class="panel hidden" id="over">
@@ -153,7 +154,11 @@ const state = {
 };
 
 const CAT_W = 220;
-const CAT_H = 92;
+const CAT_H = 145;
+
+// A distance-driven gait keeps planted paws moving at the floor's speed.
+const STRIDE = 190;
+let landingSquash = 0;
 
 function reset() {
   state.t = 0;
@@ -169,6 +174,8 @@ function reset() {
   state.spawnIn = 0.4;
   state.score = 0;
   state.shake = 0;
+  state.holding = false;
+  landingSquash = 0;
   scoreEl.textContent = "0";
 }
 
@@ -235,6 +242,8 @@ document.querySelector(".stage").addEventListener("pointerdown", (e) => {
   pressJump();
 });
 window.addEventListener("pointerup", releaseJump);
+window.addEventListener("pointercancel", releaseJump);
+window.addEventListener("blur", releaseJump);
 
 function spawnObstacle() {
   const roll = Math.random();
@@ -258,9 +267,9 @@ function catBox() {
   const y = GROUND - CAT_H - state.catY;
   return {
     x: x + CAT_W * 0.18,
-    y: y + CAT_H * 0.30,
+    y: y + CAT_H * 0.35,
     w: CAT_W * 0.58,
-    h: CAT_H * 0.62
+    h: CAT_H * 0.60
   };
 }
 
@@ -269,6 +278,7 @@ function hit(a, b) {
 }
 
 function update(dt) {
+  landingSquash = Math.max(0, landingSquash - dt * 5);
   state.t += dt;
   state.speed = Math.min(640, 340 + state.dist * 0.035);
   state.dist += state.speed * dt;
@@ -287,7 +297,10 @@ function update(dt) {
   state.catV += G * dt;
   state.catY += -state.catV * dt;
   if (state.catY <= 0) {
-    if (!state.onGround && state.mode === "play") puff(168, GROUND - 4, 5);
+    if (!state.onGround && state.mode === "play") {
+      puff(168, GROUND - 4, 5);
+      landingSquash = 1;
+    }
     state.catY = 0;
     state.catV = 0;
     state.onGround = true;
@@ -437,22 +450,201 @@ function roundRect(x, y, w, h, r) {
   ctx.fill();
 }
 
-function drawCat() {
-  const bob = state.onGround ? Math.sin(state.t * 16) * 3 : 0;
-  const stretch = state.onGround ? 1 + Math.sin(state.t * 16) * 0.035 : 1;
-  const x = 118;
-  const y = GROUND - state.catY + bob;
-  ctx.save();
-  ctx.translate(x + CAT_W / 2, y);
-  if (!state.onGround) ctx.rotate(-0.12);
-  ctx.scale(stretch, 1 / stretch);
-  ctx.fillStyle = "rgba(80,50,20,0.18)";
+function ellipse(x, y, rx, ry, color) {
+  ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.ellipse(10, 6, 78, 10, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function furStroke(points, width, far = false) {
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  const shade = ctx.createLinearGradient(0, -110, 0, 0);
+  shade.addColorStop(0, far ? "#463226" : "#71503a");
+  shade.addColorStop(0.6, far ? "#6d5039" : "#aa8056");
+  shade.addColorStop(1, far ? "#826246" : "#bc956a");
+  ctx.strokeStyle = shade;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (const p of points.slice(1)) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
   if (catImg.complete && catImg.naturalWidth) {
-    ctx.drawImage(catImg, -CAT_W / 2, -CAT_H, CAT_W, CAT_H);
+    // Texture each bone in its own coordinates so the fur bends with it.
+    for (let i = 1; i < points.length; i++) {
+      const from = points[i - 1], to = points[i];
+      const length = Math.hypot(to.x - from.x, to.y - from.y);
+      const r = width / 2;
+      ctx.save();
+      ctx.translate(from.x, from.y);
+      ctx.rotate(Math.atan2(to.y - from.y, to.x - from.x));
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(length, -r);
+      ctx.arc(length, 0, r, -Math.PI / 2, Math.PI / 2);
+      ctx.lineTo(0, r);
+      ctx.arc(0, 0, r, Math.PI / 2, Math.PI * 1.5);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(catImg, 165, 70, 110, 67, -r, -r, length + width, width);
+      ctx.fillStyle = far ? "rgba(28,21,17,0.32)" : "rgba(189,144,88,0.12)";
+      ctx.fillRect(-r, -r, length + width, width);
+      ctx.restore();
+    }
   }
+}
+
+function drawLeg(hipX, hipY, phase, hind, far, airborne) {
+  const cycle = ((phase % 1) + 1) % 1;
+  let footX, footY;
+  if (airborne) {
+    // Fold on ascent, then reach for the ground before landing.
+    const reach = state.mode === "over" ? 0.25
+      : Math.max(0, Math.min(1, state.catV / 700));
+    footX = hipX + (hind ? -25 : 24) * (1 - reach)
+      + (hind ? -14 : 17) * reach + (far ? -8 : 0);
+    footY = -36 * (1 - reach) - 7 * reach;
+  } else if (state.mode === "play") {
+    const stance = 0.42;
+    const sweep = STRIDE * stance;
+    if (cycle < stance) {
+      footX = hipX + sweep / 2 - cycle * STRIDE;
+      footY = -4;
+    } else {
+      const swing = (cycle - stance) / (1 - stance);
+      const eased = swing * swing * (3 - 2 * swing);
+      footX = hipX - sweep / 2 + sweep * eased;
+      footY = -4 - Math.sin(swing * Math.PI) * (hind ? 38 : 32);
+    }
+  } else {
+    footX = hipX + (hind ? -12 : 6);
+    footY = -4;
+  }
+
+  // Two-bone inverse kinematics: joints bend while the foot follows its arc.
+  const upper = hind ? 47 : 43;
+  const lower = 46;
+  const dx = footX - hipX, dy = footY - hipY;
+  const distance = Math.max(1, Math.min(upper + lower - 0.01, Math.hypot(dx, dy)));
+  const direction = Math.atan2(dy, dx);
+  const bend = Math.acos(Math.max(-1, Math.min(1,
+    (upper * upper + distance * distance - lower * lower) / (2 * upper * distance))));
+  const angle = direction + (hind ? 1 : -1) * bend;
+  const joint = { x: hipX + Math.cos(angle) * upper, y: hipY + Math.sin(angle) * upper };
+  const hip = { x: hipX, y: hipY };
+  const foot = { x: footX, y: footY };
+  furStroke([hip, joint], hind ? 25 : 18, far);
+  furStroke([joint, foot], 13, far);
+  // Coat bands follow each lower leg instead of sliding over the sprite.
+  for (const t of [0.24, 0.49, 0.72]) {
+    const x = joint.x + (foot.x - joint.x) * t;
+    const y = joint.y + (foot.y - joint.y) * t;
+    const a = Math.atan2(foot.y - joint.y, foot.x - joint.x);
+    ctx.strokeStyle = far ? "rgba(35,25,20,0.6)" : "rgba(49,34,26,0.5)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x - Math.sin(a) * 5, y + Math.cos(a) * 5);
+    ctx.lineTo(x + Math.sin(a) * 5, y - Math.cos(a) * 5);
+    ctx.stroke();
+  }
+  furStroke([{ x: footX - 2, y: footY }, { x: footX + 9, y: footY }], 10, far);
+}
+
+function drawTail(phase, bodyY, airborne) {
+  const points = [];
+  for (let i = 0; i <= 24; i++) {
+    const t = i / 24;
+    points.push({
+      x: 42 - t * 82 + Math.sin(t * Math.PI) * 9,
+      y: bodyY - 4 - t * (airborne ? 34 : 52)
+        + Math.sin(phase * Math.PI * 2 - t * 4) * (4 + t * 9)
+    });
+  }
+  furStroke(points, 14);
+  for (let i = 2; i < points.length - 1; i += 4) {
+    ctx.strokeStyle = "#49352b";
+    ctx.lineWidth = 14 - i / 7;
+    ctx.beginPath();
+    ctx.moveTo(points[i].x, points[i].y);
+    ctx.lineTo(points[i + 1].x, points[i + 1].y);
+    ctx.stroke();
+  }
+}
+
+function drawCat() {
+  const running = state.mode === "play" && state.onGround;
+  const airborne = !state.onGround || state.mode === "over";
+  const phase = running ? state.dist / STRIDE : state.t * 0.7;
+  const bounce = running ? Math.cos(phase * Math.PI * 4) * 3.2
+    : Math.sin(state.t * 2.5) * 1.2;
+  const bodyY = -78 + bounce + landingSquash * 8;
+
+  // The shadow stays on the floor when the cat jumps.
+  ctx.save();
+  ctx.translate(118, GROUND);
+  const shadowScale = 1 - Math.min(0.5, state.catY / 450);
+  ellipse(110, 4, 91 * shadowScale, 9 * shadowScale,
+    `rgba(65,39,19,${0.19 - Math.min(0.12, state.catY / 1800)})`);
+  ctx.translate(0, -state.catY);
+  drawTail(phase, bodyY, airborne);
+  drawLeg(62, bodyY + 6, phase + 0.48, true, true, airborne);
+  drawLeg(155, bodyY + 7, phase + 0.63, false, true, airborne);
+
+  ctx.save();
+  ctx.translate(99, bodyY);
+  ctx.rotate(airborne ? Math.max(-0.1, Math.min(0.1, state.catV / 8000)) : Math.sin(phase * Math.PI * 2) * 0.015);
+  ctx.scale(1 + landingSquash * 0.035, 1 - landingSquash * 0.09);
+  ellipse(0, 0, 72, 34, "#8a6445");
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 72, 34, 0, 0, Math.PI * 2);
+  ctx.clip();
+  if (catImg.complete && catImg.naturalWidth) {
+    // Only the coat is sampled; the lying paws and floor are never drawn.
+    ctx.drawImage(catImg, 155, 48, 212, 136, -73, -35, 146, 70);
+  }
+  ctx.restore();
+
+  drawLeg(59, bodyY + 7, phase, true, false, airborne);
+  drawLeg(159, bodyY + 7, phase + 0.15, false, false, airborne);
+
+  // Keep this cat's original face, independently animated above the shoulders.
+  ctx.save();
+  ctx.translate(177, bodyY - 29 + (running ? Math.sin(phase * Math.PI * 2) * 1.8 : 0));
+  ctx.rotate(airborne ? -0.07 : Math.sin(phase * Math.PI * 2 + 0.5) * 0.025);
+  ctx.beginPath();
+  ctx.moveTo(-41, -18);
+  ctx.lineTo(-22, -48);
+  ctx.lineTo(1, -40);
+  ctx.lineTo(27, -47);
+  ctx.lineTo(35, -14);
+  ctx.bezierCurveTo(48, 18, 33, 41, 0, 40);
+  ctx.bezierCurveTo(-32, 39, -49, 17, -41, -18);
+  ctx.closePath();
+  ctx.save();
+  ctx.clip();
+  if (catImg.complete && catImg.naturalWidth) {
+    ctx.drawImage(catImg, 358, 0, 170, 174, -43, -48, 88, 90);
+  } else {
+    ellipse(0, 0, 40, 40, "#96704c");
+    ellipse(-15, -3, 5, 7, "#38271e");
+    ellipse(17, -3, 5, 7, "#38271e");
+    ellipse(2, 12, 4, 3, "#38271e");
+  }
+  ctx.restore();
+  // Fine whiskers flex slightly with the gait.
+  ctx.strokeStyle = "rgba(235,216,181,0.65)";
+  ctx.lineWidth = 0.7;
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(side * 12, 15 + i * 3);
+      ctx.quadraticCurveTo(side * 29, 13 + i * 5,
+        side * 48, 10 + i * 8 + Math.sin(phase * 6.28) * 1.5);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
   ctx.restore();
 }
 
@@ -472,6 +664,7 @@ function frame(now) {
   const dt = Math.min(0.033, (now - (frame.prev || now)) / 1000);
   frame.prev = now;
   if (state.mode === "play") update(dt);
+  else if (state.mode === "start") state.t += dt;
   else if (state.mode === "over") {
     state.catV += G * dt;
     state.catY += -state.catV * dt;
@@ -514,3 +707,4 @@ requestAnimationFrame(frame);
 </script>
 </body>
 </html>
+
