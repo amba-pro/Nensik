@@ -1,0 +1,12 @@
+import http from 'node:http';
+import {readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+const root=path.dirname(fileURLToPath(import.meta.url));
+const args=process.argv.slice(2),arg=name=>{const i=args.indexOf(name);return i>=0?args[i+1]:undefined;};
+const port=Number(arg('--port')||process.env.PORT||5173),host=arg('--host')||'127.0.0.1';
+const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.ico':'image/x-icon'};
+const allowed=new Set(['index.html','style.css','game.js','core.js','cat.png','assets/cat-run.png','assets/cat-duck.png']);
+const server=http.createServer(async(req,res)=>{try{if(!['GET','HEAD'].includes(req.method)){res.writeHead(405);res.end();return;}const pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname);const name=pathname==='/'?'index.html':pathname.slice(1);if(!allowed.has(name)){res.writeHead(404);res.end('Not found');return;}const data=await readFile(path.join(root,name));res.writeHead(200,{'Content-Type':types[path.extname(name)]||'application/octet-stream','Cache-Control':'no-cache','X-Content-Type-Options':'nosniff'});res.end(req.method==='HEAD'?undefined:data);}catch(error){res.writeHead(error instanceof URIError?400:500);res.end('Unable to serve request');}});
+server.on('error',err=>{console.error(err.code==='EADDRINUSE'?`Port ${port} is in use. Try: npm start -- --port ${port+1}`:err.message);process.exitCode=1;});
+server.listen(port,host,()=>console.log(`Nensik City Run: http://${host}:${server.address().port}\nPress Ctrl+C to stop.`));

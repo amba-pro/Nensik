@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {makeState,start,action,step,spawnRow,LANE_WIDTH,MAX_SPEED} from '../core.js';
+function fixture(){const s=makeState(()=>.5);start(s);s.objects=[];s.spawnIn=999;return s;}
+function advance(s,seconds){for(let t=0;t<seconds;t+=1/120)step(s,1/120);}
+test('lane changes stay inside the track and arrive smoothly',()=>{const s=fixture();for(let i=0;i<4;i++)action(s,'left');assert.equal(s.lane,-1);advance(s,.5);assert.ok(Math.abs(s.x+LANE_WIDTH)<.01);for(let i=0;i<5;i++)action(s,'right');assert.equal(s.lane,1);advance(s,.5);assert.ok(Math.abs(s.x-LANE_WIDTH)<.01);});
+test('jump clears barrier but ground collision ends the run',()=>{for(const jumping of [false,true]){const s=fixture();s.objects=[{kind:'barrier',lane:0,z:4}];if(jumping)action(s,'jump');advance(s,.6);assert.equal(s.mode,jumping?'play':'over');}});
+test('duck clears overhead sign; standing or jumping does not',()=>{for(const name of ['duck','jump','none']){const s=fixture();s.objects=[{kind:'arch',lane:0,z:4}];action(s,name);advance(s,.6);assert.equal(s.mode,name==='duck'?'play':'over');}});
+test('cannot jump over a train or enter its occupied side',()=>{const s=fixture();s.objects=[{kind:'train',lane:0,z:3}];action(s,'jump');advance(s,.5);assert.equal(s.mode,'over');const side=fixture();side.objects=[{kind:'train',lane:0,z:-4}];step(side,.01);assert.equal(side.mode,'over');});
+test('coins are collected only once and only in the occupied lane',()=>{const s=fixture();s.objects=[{kind:'coin',lane:0,z:2,y:.75},{kind:'coin',lane:1,z:2,y:.75}];advance(s,.6);assert.equal(s.coins,1);advance(s,1);assert.equal(s.coins,1);});
+test('every generated row has a clear lane and its coin trail avoids obstacles',()=>{let seed=42;const rng=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};const s=makeState(rng);for(let i=0;i<1000;i++){s.objects=[];spawnRow(s);const blocked=new Set(s.objects.filter(o=>o.kind!=='coin').map(o=>o.lane));assert.ok(blocked.size<=2);for(const c of s.objects.filter(o=>o.kind==='coin'))assert.ok(!blocked.has(c.lane));}});
+test('pause freezes time, jump, position and score; restart resets run',()=>{const s=fixture();action(s,'jump');advance(s,.2);s.mode='paused';const snapshot=JSON.stringify(s);advance(s,5);assert.equal(JSON.stringify(s),snapshot);s.coins=99;start(s);assert.equal(s.mode,'play');assert.equal(s.distance,0);assert.equal(s.coins,0);assert.equal(s.y,0);assert.equal(s.lane,0);});
+test('speed is capped and holding jump cannot trigger a mid-air jump',()=>{const s=fixture();s.distance=100000;step(s,.01);assert.equal(s.speed,MAX_SPEED);action(s,'jump');step(s,.1);const vy=s.vy;action(s,'jump');assert.equal(s.vy,vy);advance(s,1);assert.equal(s.y,0);});
